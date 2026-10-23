@@ -42,6 +42,15 @@ M.C = {
 }
 local C = M.C
 
+-- Window scale (1.0 = 100%). Addons that offer a scale control set it with M.set_scale(); everyone else stays at 1.0.
+M.ui_scale = 1.0
+
+function M.set_scale(s)
+    s = math.max(0.25, math.min(1.5, s))
+    if math.abs(s - M.ui_scale) < 0.0001 then return end
+    M.ui_scale = s
+end
+
 ----------------------------------------------------------------------
 -- ImGui reads plain text as a printf format, so a '%' (e.g. "Haste%") turns into garbage.
 -- Escape it once for every Text call. Pass pre-formatted strings only.
@@ -74,11 +83,13 @@ function M.push()
         { ImGuiCol_TableRowBg, { 0, 0, 0, 0 } },
     }
     for _, c in ipairs(cols) do imgui.PushStyleColor(c[1], c[2]) end
+    local u = M.ui_scale
+    local function sc(v) return v end         -- only the FONT is scaled, never paddings or window sizes
     local vars = {
-        { ImGuiStyleVar_WindowRounding, 12 }, { ImGuiStyleVar_ChildRounding, 8 }, { ImGuiStyleVar_FrameRounding, 6 },
-        { ImGuiStyleVar_GrabRounding, 6 }, { ImGuiStyleVar_PopupRounding, 8 }, { ImGuiStyleVar_ScrollbarRounding, 8 },
-        { ImGuiStyleVar_WindowPadding, { 16, 14 } }, { ImGuiStyleVar_FramePadding, { 10, 6 } },
-        { ImGuiStyleVar_ItemSpacing, { 8, 8 } }, { ImGuiStyleVar_WindowBorderSize, 1 }, { ImGuiStyleVar_ScrollbarSize, 8 },
+        { ImGuiStyleVar_WindowRounding, sc(12) }, { ImGuiStyleVar_ChildRounding, sc(8) }, { ImGuiStyleVar_FrameRounding, sc(6) },
+        { ImGuiStyleVar_GrabRounding, sc(6) }, { ImGuiStyleVar_PopupRounding, sc(8) }, { ImGuiStyleVar_ScrollbarRounding, sc(8) },
+        { ImGuiStyleVar_WindowPadding, { sc(16), sc(14) } }, { ImGuiStyleVar_FramePadding, { sc(10), sc(6) } },
+        { ImGuiStyleVar_ItemSpacing, { sc(8), sc(8) } }, { ImGuiStyleVar_WindowBorderSize, 1 }, { ImGuiStyleVar_ScrollbarSize, sc(8) },
     }
     for _, v in ipairs(vars) do imgui.PushStyleVar(v[1], v[2]) end
     return #cols, #vars
@@ -100,7 +111,11 @@ function M.begin(name, open, extra)
         ImGuiWindowFlags_NoScrollbar, ImGuiWindowFlags_NoScrollWithMouse)
     if extra then flags = bit.bor(flags, extra) end
     M._body = false
-    return imgui.Begin(name, open, flags)
+    local vis = imgui.Begin(name, open, flags)
+    if vis then
+        imgui.SetWindowFontScale(M.ui_scale)
+    end
+    return vis
 end
 
 -- Closes the scrolling body (if the header opened one) and the window
@@ -116,16 +131,16 @@ end
 -- Text helpers
 ----------------------------------------------------------------------
 function M.title_text(text, scale, color)
-    imgui.SetWindowFontScale(scale)
+    imgui.SetWindowFontScale(scale * M.ui_scale)
     imgui.TextColored(color or C.text, text)
-    imgui.SetWindowFontScale(1.0)
+    imgui.SetWindowFontScale(M.ui_scale)
 end
 
 -- small quiet uppercase-style section caption
 function M.caption(text)
-    imgui.SetWindowFontScale(0.82)
+    imgui.SetWindowFontScale(0.82 * M.ui_scale)
     imgui.TextColored(C.muted, text)
-    imgui.SetWindowFontScale(1.0)
+    imgui.SetWindowFontScale(M.ui_scale)
 end
 
 function M.muted(text) imgui.TextColored(C.muted, text) end
@@ -202,7 +217,10 @@ function M.danger(label, size) return M.tinted(label, C.red, size) end
 -- Header: "CHAIN FINDER" (white + gold), a quiet info line, an X at the right, one hairline under it.
 -- open = the table passed to Begin (open[1] = false when X is clicked)
 ----------------------------------------------------------------------
-function M.header(open, a, b, sub)
+-- mini = nil (no button) | false (controls shown: button "-") | true (controls hidden: button "+").
+-- Returns true when the mini button was clicked.
+function M.header(open, a, b, sub, mini)
+    local mini_hit = false
     local pad_x = imgui.GetCursorPosX()
     local y0 = imgui.GetCursorPosY()
     if open then
@@ -216,6 +234,14 @@ function M.header(open, a, b, sub)
         local hit = M.ghost('X##hdr_close', { bs, bs })
         imgui.PopStyleVar(1)
         if hit then open[1] = false end
+        if mini ~= nil then
+            imgui.SetCursorPos({ imgui.GetWindowWidth() - pad_x - bs * 2 - 6, y0 + (th - bs) / 2 })
+            imgui.PushStyleVar(ImGuiStyleVar_FramePadding, { 0, 0 })
+            local mh = M.ghost((mini and '+' or '-') .. '##hdr_mini', { bs, bs })
+            imgui.PopStyleVar(1)
+            if imgui.IsItemHovered() then imgui.SetTooltip(mini and 'Show controls' or 'Hide controls (compact)') end
+            if mh then mini_hit = true end
+        end
     end
     imgui.SetCursorPos({ pad_x, y0 })
     M.title_text(a, 1.35, C.text)
@@ -224,14 +250,32 @@ function M.header(open, a, b, sub)
         M.title_text(b, 1.35, C.gold)
     end
     if sub and sub ~= '' then
-        imgui.SetWindowFontScale(0.9)
+        imgui.SetWindowFontScale(0.9 * M.ui_scale)
         imgui.TextColored(C.muted, sub)
-        imgui.SetWindowFontScale(1.0)
+        imgui.SetWindowFontScale(M.ui_scale)
     end
     imgui.Separator()
     -- everything after the header scrolls inside this child; the header above stays put
     imgui.BeginChild('##theme_body', { 0, 0 }, false)
+    imgui.SetWindowFontScale(M.ui_scale)       -- a child window has its own font scale
     M._body = true
+    return mini_hit
 end
+
+-- Mini mode (no header): a lone "+" button at the top-right that restores the window. Returns true when clicked.
+function M.mini_corner(tip)
+    local bs = 24
+    local pad_x = imgui.GetCursorPosX()
+    imgui.SetCursorPosX(imgui.GetWindowWidth() - pad_x - bs)
+    imgui.PushStyleVar(ImGuiStyleVar_FramePadding, { 0, 0 })
+    local hit = M.ghost('+##mini_corner', { bs, bs })
+    imgui.PopStyleVar(1)
+    if imgui.IsItemHovered() then imgui.SetTooltip(tip or 'Show controls') end
+    imgui.SetCursorPosX(pad_x)
+    return hit
+end
+
+-- call right after every imgui.BeginChild / BeginCombo / BeginPopup so it matches the window scale
+function M.child_scale() imgui.SetWindowFontScale(M.ui_scale) end
 
 return M

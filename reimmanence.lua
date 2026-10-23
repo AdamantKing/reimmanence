@@ -1,6 +1,6 @@
 addon.name    = 'reimmanence'
-addon.author  = 'Adamantking'
-addon.version = '2.0.0'
+addon.author  = 'you'
+addon.version = '2.1.0'
 addon.desc    = 'Scholar helper: Immanence skillchain combos that run themselves, with game-state timing, safety stops and a Genbu II (Vana\'diel day) window.'
 addon.link    = ''
 
@@ -8,6 +8,8 @@ require('common')
 local chat  = require('chat')
 local imgui = require('imgui')
 local theme = require('theme')
+require('aurora')(theme)
+theme.persist_scale('reimmanence')
 
 ----------------------------------------------------------------------
 -- Timing (seconds) - edit these to taste
@@ -697,6 +699,7 @@ local function draw_genbu(now)
             imgui.TextColored(COL_DIM, ('showing first %d chains (more exist)'):format(GENBU_MAX))
         end
     end
+    theme.scale_footer()
     theme.finish()
     theme.pop(nc, nv)
     if not genbu_open[1] then
@@ -732,6 +735,7 @@ ashita.events.register('d3d_present', 'reimmanence_present', function()
         end
         for i, r in ipairs(state.results) do draw_row(i, r) end
     end
+    theme.scale_footer()
     theme.finish()
     theme.pop(nc, nv)
     if not win_open[1] then

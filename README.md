@@ -32,3 +32,6 @@ The Immanence status effect id (470) was entered from memory: if smart timing sa
 This sends normal game commands (`/ja`, `/ma`, `/p`) for you. Check your server's rules on automation before using it.
 
 Skillchain data from Ivaar's Skillchains addon.
+
+## 2.1.0 additions
+- **Aurora look** and a **font scale slider** (25-150%) at the bottom right of each window. The scale is remembered in `config\addons\reimmanence\ui.cfg`. Not tested in game.
