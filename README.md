@@ -1,7 +1,9 @@
 
 **NOW APPROVED FOR USE ON CATSEYEXI***
 
-# Reimmanence<img width="785" height="552" alt="Screenshot 2026-10-25 024013" src="https://github.com/user-attachments/assets/ad73a7e2-bcfa-49fd-bf00-16d1c8747006" />
+# Reimmanence
+
+img width="785" height="552" alt="Screenshot 2026-10-25 024013" src="https://github.com/user-attachments/assets/ad73a7e2-bcfa-49fd-bf00-16d1c8747006" />
 
 Scholar helper for Ashita v4. Pick a skillchain element, press **Go**, and it announces the chain, uses Immanence and casts each spell, then calls the magic burst.
 
