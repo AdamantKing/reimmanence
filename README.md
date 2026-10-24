@@ -1,5 +1,7 @@
 # Reimmanence
 
+**NOT APPROVED FOR USE ON CATSEYEXI***
+
 Scholar helper for Ashita v4. Pick a skillchain element, press **Go**, and it announces the chain, uses Immanence and casts each spell, then calls the magic burst.
 
 - **Game-state timing:** waits for the Immanence buff and for each spell to land instead of fixed timers (`/sc timing fixed` restores the old behaviour).
