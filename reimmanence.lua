@@ -1,6 +1,6 @@
 addon.name    = 'reimmanence'
 addon.author  = 'you'
-addon.version = '2.1.0'
+addon.version = '2.3.2'
 addon.desc    = 'Scholar helper: Immanence skillchain combos that run themselves, with game-state timing, safety stops and a Genbu II (Vana\'diel day) window.'
 addon.link    = ''
 
@@ -22,8 +22,10 @@ local ANNOUNCE_DELAY = 0   -- extra wait after the last spell before "GO MAGIC B
 -- smart mode (default): every step waits for what the game actually does
 local IMM_BUFF      = 470  -- status effect id of Immanence (/sch buff <id> changes it if it is wrong)
 local IMM_MIN       = 1.0  -- seconds the Immanence buff must have been up before the spell is sent
-local IMM_TIMEOUT   = 4    -- Immanence did not show up after this long: no charge / on recast / Amnesia
-local SETTLE        = 0.6  -- pause after a spell lands before the next Immanence
+local IMM_TIMEOUT   = 7    -- Immanence did not show up after this long: no charge / on recast / Amnesia
+local IMM_RETRY     = 2.0  -- the /ja is sent again every this many seconds while the buff has not appeared (max IMM_TRIES sends)
+local IMM_TRIES     = 3
+local SETTLE        = 1.2  -- pause after a spell lands before the next Immanence
 local CAST_MARGIN   = 6    -- seconds on top of the spell's cast time before "the spell did not go off"
 local RECAST_MAX    = 20   -- refuse to wait for a spell recast longer than this
 local MAX_STEPS     = 5
@@ -183,6 +185,7 @@ local function queue(cmd)
     AshitaCore:GetChatManager():QueueCommand(1, cmd)
 end
 
+local detect = nil   -- /sch detect: watching for the status effect Immanence adds
 local state = nil    -- { element=, steps=, results={} }
 local run   = nil    -- the running sequence (see start_combo)
 local stopped = nil  -- { text=, t= }  why the last sequence was stopped, shown in the windows
@@ -233,6 +236,38 @@ end
 local function own_mp()
     local ok, v = pcall(function() return mm():GetParty():GetMemberMP(0) end)
     return ok and v or nil
+end
+
+-- readable list of the status effect ids you have right now
+local function buff_text()
+    local b = player_buffs()
+    if not b then return '(cannot read status effects)' end
+    local t = {}
+    for id in pairs(b) do if id ~= 255 then t[#t + 1] = id end end
+    table.sort(t)
+    return #t > 0 and table.concat(t, ', ') or '(none)'
+end
+
+-- Immanence's status effect id is remembered between sessions (it is the one thing that can differ per server)
+local function settings_dir() return ('%sconfig\\addons\\reimmanence\\'):format(AshitaCore:GetInstallPath()) end
+local function save_settings()
+    pcall(function()
+        ashita.fs.create_dir(settings_dir())
+        local f = io.open(settings_dir() .. 'settings.cfg', 'w')
+        if f then f:write(('return { imm_buff = %d }\n'):format(IMM_BUFF)) f:close() end
+    end)
+end
+local settings_loaded = false
+local function load_settings()
+    if settings_loaded then return end
+    settings_loaded = true
+    pcall(function()
+        local chunk = loadfile(settings_dir() .. 'settings.cfg')
+        local t = chunk and chunk()
+        if type(t) == 'table' and type(t.imm_buff) == 'number' and t.imm_buff >= 1 and t.imm_buff < 1024 then
+            IMM_BUFF = math.floor(t.imm_buff)
+        end
+    end)
 end
 
 local function own_zone()
@@ -333,6 +368,80 @@ local function safety()
 end
 
 -- Before anything is sent: right job, a target, you know every spell, enough MP for all of them
+----------------------------------------------------------------------
+-- Stratagem charges (Immanence costs one). Same estimate the Windower/Gearswap Scholar scripts use:
+--   max charges = floor((SCH level + 10) / 20),  charges = floor(max - max * recast / 240 s)
+-- The stratagem recast is ability recast id 231. Returns charges, max (or nil when it cannot be read).
+----------------------------------------------------------------------
+local function strat_charges()
+    local ok, cur, max = pcall(function()
+        local p = mm():GetPlayer()
+        local lv
+        if p:GetMainJob() == 20 then lv = p:GetMainJobLevel()
+        elseif p:GetSubJob() == 20 then lv = p:GetSubJobLevel() end
+        if not lv or lv < 10 then return nil end
+        local mx = math.floor((lv + 10) / 20)
+        local rc = mm():GetRecast()
+        local timer = 0
+        for i = 0, 31 do
+            if rc:GetAbilityTimerId(i) == 231 then timer = rc:GetAbilityTimer(i) / 60 break end
+        end
+        local cur = math.floor(mx - mx * timer / 240 + 0.0001)
+        return math.max(0, math.min(mx, cur)), mx
+    end)
+    if ok and cur then return cur, max end
+    return nil
+end
+
+-- big, easy-to-see readout under the window title
+local function draw_charges(needed)
+    local cur, max = strat_charges()
+    imgui.SetWindowFontScale(0.8 * theme.ui_scale)
+    imgui.TextColored(COL_DIM, 'IMMANENCE CHARGES')
+    imgui.SetWindowFontScale(1.7 * theme.ui_scale)
+    if not cur then
+        imgui.TextColored(COL_DIM, '?')
+    else
+        local col = (cur == 0 and theme.C.red) or ((needed and cur < needed) and theme.C.amber) or theme.C.green
+        imgui.TextColored(col, ('%d / %d'):format(cur, max))
+        imgui.SameLine(0, 14)
+        -- magic orbs: a glowing, highlighted sphere per charge, a faint empty ring per spent one
+        local th = imgui.GetTextLineHeight()
+        local r = math.max(5, th * 0.36)
+        local gap = r * 0.9
+        local total_w = max * (2 * r) + (max - 1) * gap
+        local ok = pcall(function()
+            local dl = imgui.GetWindowDrawList()
+            local a1, a2 = imgui.GetCursorScreenPos()
+            local x0, y0
+            if type(a1) == 'table' then x0, y0 = a1.x or a1[1], a1.y or a1[2] else x0, y0 = a1, a2 end
+            local cy = y0 + th * 0.5
+            for i = 1, max do
+                local cx = x0 + r + (i - 1) * (2 * r + gap)
+                if i <= cur then
+                    dl:AddCircleFilled({ cx, cy }, r * 1.45, imgui.GetColorU32({ col[1], col[2], col[3], 0.10 }), 24)   -- glow
+                    dl:AddCircleFilled({ cx, cy }, r * 1.18, imgui.GetColorU32({ col[1], col[2], col[3], 0.18 }), 24)
+                    dl:AddCircleFilled({ cx, cy }, r, imgui.GetColorU32({ col[1] * 0.55, col[2] * 0.55, col[3] * 0.55, 1 }), 24) -- body (darker rim)
+                    dl:AddCircleFilled({ cx, cy }, r * 0.78, imgui.GetColorU32({ col[1], col[2], col[3], 1 }), 24)
+                    dl:AddCircleFilled({ cx - r * 0.30, cy - r * 0.32 }, r * 0.30, imgui.GetColorU32({ 1, 1, 1, 0.75 }), 12)   -- shine
+                else
+                    dl:AddCircleFilled({ cx, cy }, r, imgui.GetColorU32({ 1, 1, 1, 0.04 }), 24)
+                    dl:AddCircle({ cx, cy }, r, imgui.GetColorU32({ col[1], col[2], col[3], 0.30 }), 24, 1.5)
+                end
+            end
+        end)
+        if ok then
+            imgui.Dummy({ total_w, th })
+        else
+            for i = 1, max do
+                if i > 1 then imgui.SameLine(0, 3) end
+                imgui.TextColored(i <= cur and col or COL_DIM, i <= cur and '(O)' or '( )')
+            end
+        end
+    end
+    imgui.SetWindowFontScale(theme.ui_scale)
+end
+
 local function preflight(combo)
     local ok, main, sub = pcall(function()
         local p = mm():GetPlayer()
@@ -345,6 +454,10 @@ local function preflight(combo)
     if target_index() == 0 then
         say('Target the enemy first.')
         return false
+    end
+    local ch = strat_charges()
+    if ch and ch < #combo.spells then
+        say(('Careful: about %d Immanence charge(s) available, this chain needs %d.'):format(ch, #combo.spells))
     end
     local total = 0
     for _, sp in ipairs(combo.spells) do
@@ -427,7 +540,11 @@ local function step_smart(now)
             end
         end
         local b = player_buffs() or {}
-        if not b[IMM_BUFF] then queue('/ja "Immanence" <me>') end      -- already up from before: just use it
+        run.sent, run.t_sent = 0, now
+        if not b[IMM_BUFF] then
+            queue('/ja "Immanence" <me>')                              -- already up from before: just use it
+            run.sent = 1
+        end
         run.phase, run.t0, run.seen = 'imm_wait', now, nil
         run.desc = ('Immanence (%d/%d)'):format(run.i, n)
 
@@ -442,8 +559,18 @@ local function step_smart(now)
                 run.phase, run.t0 = 'cast_wait', now
                 run.desc = ('Casting %s (%d/%d)'):format(name, run.i, n)
             end
-        elseif now - run.t0 > IMM_TIMEOUT then
-            abort('Immanence did not activate (no stratagem charge, still on recast, or Amnesia?)')
+        else
+            -- the command can be swallowed (game busy right after a cast / chat line): send it again
+            if (run.sent or 0) < IMM_TRIES and now - (run.t_sent or now) >= IMM_RETRY then
+                queue('/ja "Immanence" <me>')
+                run.sent, run.t_sent = (run.sent or 0) + 1, now
+            end
+            if now - run.t0 > IMM_TIMEOUT then
+                local bb = player_buffs() or {}
+                local arts = bb[358] or bb[359] or bb[401] or bb[402]
+                abort(('Immanence did not activate (sent %d times). %sStatus effects now: %s. If you can use Immanence by hand, run /sch detect.')
+                    :format(run.sent or 0, arts and '' or 'No Light/Dark Arts is active - stratagems need one. ', buff_text()))
+            end
         end
 
     elseif run.phase == 'cast_wait' then
@@ -603,6 +730,7 @@ local function draw_genbu(now)
     if theme.begin('Reimmanence - Genbu II', genbu_open) then
         theme.header(genbu_open, 'GENBU', 'II', ('%s  -  never use %s spells or %s skillchains'):format(
             day.name, day.el:upper(), day.el:upper()))
+        draw_charges(2)
 
         -- day banner: what day it is, when it ends, and whether the list matches it
         if genbu.changed and now - genbu.changed.t < 20 then
@@ -699,7 +827,6 @@ local function draw_genbu(now)
             imgui.TextColored(COL_DIM, ('showing first %d chains (more exist)'):format(GENBU_MAX))
         end
     end
-    theme.scale_footer()
     theme.finish()
     theme.pop(nc, nv)
     if not genbu_open[1] then
@@ -713,6 +840,27 @@ end
 ----------------------------------------------------------------------
 ashita.events.register('d3d_present', 'reimmanence_present', function()
     local now = os.clock()
+    load_settings()
+    if detect then
+        local b = player_buffs() or {}
+        local found = {}
+        for id in pairs(b) do
+            if id ~= 255 and not detect.before[id] then found[#found + 1] = id end
+        end
+        if #found == 1 then
+            IMM_BUFF = found[1]
+            save_settings()
+            say(('detect: Immanence is status effect %d - saved.'):format(IMM_BUFF))
+            detect = nil
+        elseif #found > 1 then
+            table.sort(found)
+            say('detect: several new effects appeared (' .. table.concat(found, ', ') .. '). Wait until only Immanence is new and try again.')
+            detect = nil
+        elseif now > detect.t_end then
+            say('detect: nothing new appeared - Immanence was not used.')
+            detect = nil
+        end
+    end
     if run then step_run(now) end
     draw_genbu(now)
     if not state then return end
@@ -724,6 +872,7 @@ ashita.events.register('d3d_present', 'reimmanence_present', function()
     if theme.begin('Reimmanence', win_open) then
         theme.header(win_open, 'REIMMANENCE', '', ('%s skillchain  -  %d spells  -  %s timing'):format(
             state.element, state.steps, timing))
+        draw_charges(state.steps)
         imgui.TextColored(COL_DIM, 'Press Go to announce, run Immanence + the spells, and call the burst.')
 
         draw_run_status(now)
@@ -735,7 +884,6 @@ ashita.events.register('d3d_present', 'reimmanence_present', function()
         end
         for i, r in ipairs(state.results) do draw_row(i, r) end
     end
-    theme.scale_footer()
     theme.finish()
     theme.pop(nc, nv)
     if not win_open[1] then
@@ -755,7 +903,8 @@ local function help()
     say('/sch stop          cancel a running sequence')
     say('/sch tier <1-6>    which spell tier to cast (default 1; helixes max out at II)')
     say('/sch timing smart|fixed   smart = wait for the game (default), fixed = old blind timers')
-    say('/sch buff <id>     Immanence status effect id used by smart timing (default 470)')
+    say('/sch buff <id>     Immanence status effect id used by smart timing (default 470, remembered)')
+    say('/sch detect        finds that id for you: run it, then use Immanence by hand   /sch buffs  lists your status effect ids')
     say('/sch off           close the windows')
     say('A run stops by itself if you zone, the target dies or changes, you are put out of action, MP runs short, or Immanence/a spell does not go off.')
 end
@@ -799,7 +948,16 @@ ashita.events.register('command', 'reimmanence_command', function(e)
         local n = tonumber(args[3])
         if not n or n < 1 or n > 1023 then say('Usage: /sch buff <status effect id>  (Immanence is 470)') return end
         IMM_BUFF = math.floor(n)
-        say('Immanence status effect id: ' .. IMM_BUFF)
+        save_settings()
+        say('Immanence status effect id: ' .. IMM_BUFF .. ' (saved)')
+
+    elseif arg == 'buffs' then
+        say(('Your status effect ids: %s'):format(buff_text()))
+        say(('Immanence id in use: %d - %s'):format(IMM_BUFF, (player_buffs() or {})[IMM_BUFF] and 'you have it now' or 'not on you right now'))
+
+    elseif arg == 'detect' then
+        detect = { t_end = os.clock() + 20, before = player_buffs() or {} }
+        say('detect: use Immanence by hand now (within 20 seconds).')
 
     elseif arg == 'go' then
         start_run(tonumber(args[3]) or 0)

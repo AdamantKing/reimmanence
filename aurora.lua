@@ -6,7 +6,7 @@
 -- Usage:   local theme = require('theme')
 --          require('aurora')(theme)
 --          theme.persist_scale('myaddon')      -- optional: remembers the font scale in config\addons\myaddon\ui.cfg
---          ... inside a window, as the LAST thing before theme.finish():   theme.scale_footer()
+--          (the scale bar is drawn automatically by theme.finish(), pinned to the bottom right below the scrolling body)
 --          ... right after every imgui.BeginCombo / BeginChild:            theme.child_scale()
 -- Delete the require line to go back to the classic gold theme.
 
@@ -46,6 +46,7 @@ return function(M)
     end
     function M.persist_scale(name) scale_name, scale_loaded = name, false end
     local function save_scale()
+        if M.on_scale then M.on_scale(math.floor(M.ui_scale * 100 + 0.5)) return end   -- the addon stores it itself
         if not scale_name then return end
         pcall(function()
             ashita.fs.create_dir(('%sconfig\\addons\\%s\\'):format(AshitaCore:GetInstallPath(), scale_name))
@@ -73,9 +74,14 @@ return function(M)
         imgui.SameLine()
         imgui.SetNextItemWidth(sw)
         local v = { math.floor(M.ui_scale * 100 + 0.5) }
-        if imgui.SliderInt('##aur_scale', v, 25, 150, '%d%%') then
-            M.set_scale(v[1] / 100)
-            dragging = true
+        -- AlwaysClamp (16): a value typed with Ctrl+Click is clamped to 25-150 too. Anything that is not a plain
+        -- number (NaN, nil) is ignored.
+        if imgui.SliderInt('##aur_scale', v, 25, 150, '%d%%', 16) then
+            local n = tonumber(v[1])
+            if n and n == n then
+                M.set_scale(math.floor(math.max(25, math.min(150, n)) + 0.5) / 100)
+                dragging = true
+            end
         end
         if dragging and not imgui.IsItemActive() then
             dragging = false
@@ -223,9 +229,20 @@ return function(M)
             imgui.SetWindowFontScale(M.ui_scale)
         end
         glow_rule()
-        imgui.BeginChild('##theme_body', { 0, 0 }, false)
+        -- the body scrolls; the last 40 px of the window are left for the scale bar, which therefore never scrolls away
+        imgui.BeginChild('##theme_body', { 0, -40 }, false)
         imgui.SetWindowFontScale(M.ui_scale)
         M._body = true
         return mini_hit
+    end
+
+    -- closes the scrolling body, pins the scale bar to the bottom right of the window, ends the window
+    function M.finish()
+        if M._body then
+            imgui.EndChild()
+            M._body = false
+            M.scale_footer()
+        end
+        imgui.End()
     end
 end
