@@ -9,7 +9,7 @@ Scholar helper for Ashita v4. Pick a skillchain element, press **Go**, and it an
 
 - **Game-state timing:** waits for the Immanence buff and for each spell to land instead of fixed timers (`/sc timing fixed` restores the old behaviour).
 - **Safety stops:** stops by itself when you zone, the target dies or changes, you are put out of action, MP runs low, or Immanence / a spell does not go off.
-- **GENBU II** (`/sch genbu`): This was made solely to use against Genbu 2.0 on the CatseyeXI private server. It's untested against that boss (Yet to be approved), but the option itself works. 2-spell chains for the current Vana'diel day that never use a spell, or make a skillchain, of the day's element; day-change banner, countdown, and the best burst spell you know for each element.
+- **GENBU II** (`/sch genbu`): This was made solely to use against Genbu 2.0 on the CatseyeXI private server. It's untested against that boss (Yet to him myself), but the option itself works. 2-spell chains for the current Vana'diel day that never use a spell, or make a skillchain, of the day's element; day-change banner, countdown, and the best burst spell you know for each element.
 
 <img width="762" height="843" alt="Screenshot 2026-10-25 023530" src="https://github.com/user-attachments/assets/9c1b818c-0f60-4ad7-be56-e9b84c442547" />
 
